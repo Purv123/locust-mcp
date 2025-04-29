@@ -3,6 +3,8 @@ import websockets
 import json
 import logging
 import sys
+import os
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,7 +16,17 @@ async def test_mcp_server(prompt: str = None):
     
     if not prompt:
         # Default test if no prompt provided
-        prompt = "Test https://jsonplaceholder.typicode.com API with 5 users: GET /posts 3 times more often than POST /posts with json data"
+        prompt = "Test https://jsonplaceholder.typicode.com API with 5 users: GET /posts endpoint"
+
+    # Create timestamp for the test directory
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    test_dir = os.path.join("tests", "generated", timestamp)
+    os.makedirs(test_dir, exist_ok=True)
+    
+    # Define test file paths
+    test_file_name = f"locust_test_{timestamp}.py"
+    test_file_path = os.path.join(test_dir, test_file_name)
+    config_file_path = os.path.join(test_dir, "config.json")
 
     async with websockets.connect('ws://localhost:8000/mcp') as websocket:
         # Generate test from natural language prompt
@@ -34,35 +46,23 @@ async def test_mcp_server(prompt: str = None):
             print(f"Error: {generate_result['error']}")
             return
 
-        test_id = generate_result["result"]["test_id"]
-        print(f"\nGenerated test (ID: {test_id}):")
-        print(generate_result["result"]["script"])
-
-        # Run the generated test
-        run_config = {
-            "command": "run",
-            "params": {
-                "test_id": test_id
-            }
-        }
-
-        print("\nRunning the generated test...")
-        await websocket.send(json.dumps(run_config))
-        response = await websocket.recv()
-        run_result = json.loads(response)
-
-        if "error" in run_result and run_result["error"]:
-            print(f"Error: {run_result['error']}")
-        else:
-            stats = run_result.get("result", {}).get("statistics", [])
-            if stats and len(stats) > 0:
-                latest_stats = stats[-1]
-                print("\nTest Results:")
-                print(f"Total Requests: {latest_stats.get('num_requests', 0)}")
-                print(f"Failed Requests: {latest_stats.get('num_failures', 0)}")
-                print(f"Average Response Time: {latest_stats.get('avg_response_time', 0):.2f} ms")
-                print(f"Requests/sec: {latest_stats.get('current_rps', 0):.2f}")
-                print(f"Failure Rate: {latest_stats.get('failure_rate', 0):.2f}%")
+        if "result" in generate_result:
+            script = generate_result["result"]["script"]
+            print(f"\nGenerated Locust test script:")
+            print("=" * 40)
+            print(script)
+            print("=" * 40)
+            
+            # Save test script
+            with open(test_file_path, 'w') as f:
+                f.write(script)
+            
+            # Save config
+            with open(config_file_path, 'w') as f:
+                json.dump(generate_result["result"]["config"], f, indent=4)
+            
+            print("\nTo run this test, use the following command:")
+            print(f"locust -f {test_file_path} --host {generate_result['result']['config']['targetUrl']} --users {generate_result['result']['config']['users']} --spawn-rate {generate_result['result']['config']['spawnRate']} --run-time {generate_result['result']['config']['runTime']} --headless")
 
 if __name__ == "__main__":
     # Get prompt from command line arguments if provided

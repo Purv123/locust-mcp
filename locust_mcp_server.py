@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 import json
@@ -7,6 +7,7 @@ import tempfile
 import os
 import logging
 import subprocess
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -29,17 +30,55 @@ class Endpoint(BaseModel):
     headers: Optional[Dict[str, Any]] = None
     weight: Optional[int] = 1
 
+def parse_prompt(prompt: str) -> Dict[str, Any]:
+    """Parse natural language prompt to extract test configuration."""
+    config = {
+        "targetUrl": "http://localhost:8000",
+        "users": 10,
+        "spawnRate": 1,
+        "runTime": "30s",
+        "endpoints": []
+    }
+    
+    # Extract URL
+    url_match = re.search(r"Test\s+(https?://[^\s]+)", prompt)
+    if url_match:
+        config["targetUrl"] = url_match.group(1)
+    
+    # Extract number of users
+    users_match = re.search(r"(\d+)\s+users?", prompt)
+    if users_match:
+        config["users"] = int(users_match.group(1))
+    
+    # Extract think time
+    think_time_match = re.search(r"(\d+)\s+second[s]?\s+think time", prompt)
+    if think_time_match:
+        think_time = int(think_time_match.group(1))
+        config["thinkTime"] = think_time
+    
+    # Extract endpoints
+    if "GET" in prompt:
+        path_match = re.search(r"GET\s+(/\w+)", prompt)
+        if path_match:
+            config["endpoints"].append({
+                "method": "GET",
+                "path": path_match.group(1)
+            })
+    
+    return config
+
 def generate_locust_script(params: Dict[str, Any]) -> str:
     """Generate a Locust test script based on the provided parameters."""
     target_url = params.get("targetUrl", "http://localhost:8000")
     endpoints = params.get("endpoints", [])
+    think_time = params.get("thinkTime", 1)
     
     script_lines = [
         "from locust import HttpUser, task, between",
         "",
         f"class PerformanceTest(HttpUser):",
         f"    host = \"{target_url}\"",
-        "    wait_time = between(1, 5)",
+        f"    wait_time = between({think_time}, {think_time + 1})",
         ""
     ]
 
@@ -69,138 +108,86 @@ def generate_locust_script(params: Dict[str, Any]) -> str:
 
     return "\n".join(script_lines)
 
-async def run_locust_test(script: str, config: Dict[str, Any]) -> Dict[str, Any]:
-    """Run Locust tests with the given script and configuration."""
-    try:
-        # Create temporary file for the test script
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-            f.write(script)
-            script_path = f.name
+class WebSocketConnectionManager:
+    def __init__(self, websocket: WebSocket):
+        self.websocket = websocket
+        self.is_connected = False
 
+    async def connect(self):
         try:
-            # Construct Locust command
-            cmd = [
-                "locust",
-                "-f", script_path,
-                "--host", config.get("host", "http://localhost:8000"),
-                "--users", str(config.get("users", 10)),
-                "--spawn-rate", str(config.get("spawn_rate", 1)),
-                "--run-time", str(config.get("run_time", "30s")),
-                "--headless",
-                "--json"
-            ]
-
-            # Run Locust process
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-
-            stdout, stderr = await process.communicate()
-            
-            try:
-                # Parse JSON output from Locust
-                results = json.loads(stdout.decode())
-                return {
-                    "success": True,
-                    "statistics": results,
-                    "error": None
-                }
-            except json.JSONDecodeError:
-                return {
-                    "success": False,
-                    "statistics": None,
-                    "error": "Failed to parse Locust output",
-                    "output": stdout.decode()
-                }
-
+            await self.websocket.accept()
+            self.is_connected = True
+            logger.info("New WebSocket connection established")
         except Exception as e:
-            return {
-                "success": False,
-                "statistics": None,
-                "error": str(e)
-            }
-        finally:
-            if os.path.exists(script_path):
-                os.unlink(script_path)
+            logger.error(f"Failed to establish WebSocket connection: {str(e)}")
+            raise
 
-    except Exception as e:
-        return {
-            "success": False,
-            "statistics": None,
-            "error": str(e)
-        }
+    async def disconnect(self):
+        if self.is_connected:
+            try:
+                await self.websocket.close()
+            except Exception as e:
+                logger.error(f"Error during WebSocket closure: {str(e)}")
+            finally:
+                self.is_connected = False
+                logger.info("WebSocket connection closed")
+
+    async def send_response(self, response: MCPResponse):
+        if self.is_connected:
+            try:
+                await self.websocket.send_text(response.json())
+            except Exception as e:
+                logger.error(f"Error sending response: {str(e)}")
+                await self.disconnect()
 
 @app.websocket("/mcp")
 async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    logger.info("New WebSocket connection established")
+    connection = WebSocketConnectionManager(websocket)
     
-    while True:
-        try:
-            # Receive message
-            data = await websocket.receive_text()
-            request = MCPRequest.parse_raw(data)
-            logger.info(f"Received command: {request.command}")
+    try:
+        await connection.connect()
+        
+        data = await websocket.receive_text()
+        request = MCPRequest.parse_raw(data)
+        logger.info(f"Received command: {request.command}")
+        
+        if request.command == "generate":
+            try:
+                # Parse the prompt if provided
+                if "prompt" in request.params:
+                    config = parse_prompt(request.params["prompt"])
+                else:
+                    config = request.params
+                
+                # Generate Locust test script
+                script = generate_locust_script(config)
+                
+                # Generate command string
+                cmd = (f"locust -f test_script.py --host {config['targetUrl']} --users {config['users']} "
+                      f"--spawn-rate {config['spawnRate']} --run-time {config['runTime']} "
+                      f"--headless --only-summary --json")
+                
+                response = MCPResponse(result={
+                    "script": script,
+                    "config": config,
+                    "command": cmd,
+                    "success": True
+                })
+                await connection.send_response(response)
+                
+            except Exception as e:
+                logger.error(f"Error generating script: {str(e)}")
+                await connection.send_response(MCPResponse(error=str(e)))
+        else:
+            error_msg = f"Unknown command: {request.command}"
+            logger.error(error_msg)
+            await connection.send_response(MCPResponse(error=error_msg))
             
-            # Process command
-            if request.command == "generate":
-                try:
-                    # Generate Locust test script
-                    script = generate_locust_script(request.params)
-                    response = MCPResponse(result={
-                        "script": script,
-                        "config": {
-                            "host": request.params.get("targetUrl", "http://localhost:8000"),
-                            "users": request.params.get("users", 10),
-                            "spawn_rate": request.params.get("spawnRate", 1),
-                            "run_time": request.params.get("runTime", "30s")
-                        }
-                    })
-                except Exception as e:
-                    logger.error(f"Error generating script: {str(e)}")
-                    response = MCPResponse(error=str(e))
-                    
-            elif request.command == "run":
-                try:
-                    # Run Locust test
-                    results = await run_locust_test(
-                        request.params.get("script", ""),
-                        request.params.get("config", {})
-                    )
-                    response = MCPResponse(result=results)
-                except Exception as e:
-                    logger.error(f"Error running test: {str(e)}")
-                    response = MCPResponse(error=str(e))
-                    
-            elif request.command == "stop":
-                try:
-                    # Stop running tests
-                    cmd = "pkill -f locust"
-                    process = await asyncio.create_subprocess_shell(
-                        cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
-                    await process.communicate()
-                    response = MCPResponse(result={"success": True, "message": "All Locust processes stopped"})
-                except Exception as e:
-                    logger.error(f"Error stopping tests: {str(e)}")
-                    response = MCPResponse(error=str(e))
-            else:
-                error_msg = f"Unknown command: {request.command}"
-                logger.error(error_msg)
-                response = MCPResponse(error=error_msg)
-            
-            # Send response
-            await websocket.send_text(response.json())
-            
-        except Exception as e:
-            logger.error(f"WebSocket error: {str(e)}")
-            await websocket.send_text(MCPResponse(error=str(e)).json())
-
-if __name__ == "__main__":
-    import uvicorn
-    logger.info("Starting Locust MCP Server")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    except WebSocketDisconnect:
+        logger.info("Client disconnected normally")
+    except Exception as e:
+        logger.error(f"WebSocket error: {str(e)}")
+        if connection.is_connected:
+            await connection.send_response(MCPResponse(error=str(e)))
+    finally:
+        await connection.disconnect()
