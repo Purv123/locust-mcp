@@ -1,0 +1,15 @@
+curl 'https://mon.signalfx.com/v2/dashboard/_/hierarchy/DoW3fDtAkDc?group=DjdWq-WAkfI' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -b '_ga=GA1.1.943590969.1745649128; SF_CUSTOM_DOMAIN=o11ytest.lab0.signalfx.com; _ga_WT03E3Y8WN=GS1.1.1745918965.5.0.1745918965.0.0.0; SF_LAST_ACTIVE=-4; _ga_BG7G8Q107V=GS1.1.1745950716.1.1.1745950794.0.0.0' \
+  -H 'origin: https://app.mon0.signalfx.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://app.mon0.signalfx.com/' \
+  -H 'sec-ch-ua: "Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "macOS"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-site' \
+  -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36' \
+  -H 'x-sf-token: hLSs0pMv10B2pz6CfGsPjg'

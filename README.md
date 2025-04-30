@@ -1,14 +1,17 @@
 # Locust MCP (Model Context Protocol) Test Generator
 
-A natural language-driven load testing tool that generates and runs Locust test scripts based on simple English prompts.
+A natural language-driven load testing tool that generates and runs Locust test scripts based on simple English prompts or curl commands.
 
 ## Features
 
-- Generate Locust test scripts using natural language prompts
+- Generate Locust test scripts using:
+  - Natural language prompts
+  - Curl commands (NEW!)
 - Automatically detect API endpoints, user count, and think time from prompts
 - Save generated tests with timestamps for historical tracking
 - Configurable test parameters (users, spawn rate, run time)
 - WebSocket-based communication between client and server
+- Support for headers, cookies, and complex HTTP requests
 
 ## Prerequisites
 
@@ -71,10 +74,35 @@ python test_client.py "Test https://jsonplaceholder.typicode.com API with 5 user
 python test_client.py "Test https://api.example.com with 10 users: GET /users endpoint with 3 second think time between requests"
 ```
 
-3. Multiple endpoints:
+3. Using curl commands:
 ```bash
-python test_client.py "Test https://api.example.com with 20 users: GET /users 3 times more often than POST /users with json data"
+python test_client.py "curl 'https://api.example.com/v2/data' \
+  -H 'accept: application/json' \
+  -H 'authorization: Bearer token123' \
+  -H 'content-type: application/json'"
 ```
+
+The generator will automatically:
+- Parse the curl command
+- Extract headers, cookies, and other parameters
+- Generate an equivalent Locust test
+- Handle complex requests with proper authentication and headers
+
+### Curl Command Support
+
+The tool now supports generating tests directly from curl commands. It handles:
+- Headers (-H flags)
+- Cookies (-b flag)
+- Request methods (-X flag)
+- Request data (-d flag)
+- Complex URLs with query parameters
+- Authentication headers
+- Content-Type specifications
+
+When using curl commands:
+1. Copy the curl command from your browser's network tools or API documentation
+2. Pass it directly to the test client
+3. The generator will create a Locust test maintaining all headers and parameters
 
 ### Test Output Structure
 
