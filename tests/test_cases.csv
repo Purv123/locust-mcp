@@ -1,0 +1,4 @@
+Sr. No,Curl Command,No. Of Users,Duration
+1,"curl 'https://mon.signalfx.com/v2/dashboard/_/hierarchy/DoW3fDtAkDc?group=DjdWq-WAkfI' -H 'accept: application/json' -H 'x-sf-token: hLSs0pMv10B2pz6CfGsPjg'",50,2m
+2,"curl 'https://jsonplaceholder.typicode.com/posts' -H 'accept: application/json'",10,30s
+3,"curl 'https://api.example.com/users' -H 'accept: application/json' -H 'authorization: Bearer token123'",20,1m

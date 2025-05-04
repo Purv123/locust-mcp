@@ -5,6 +5,7 @@ import logging
 import sys
 import os
 import re
+import csv
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 from src.locust_mcp.locust_generator import LocustScriptGenerator
@@ -12,6 +13,20 @@ from src.locust_mcp.locust_generator import LocustScriptGenerator
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def read_test_cases(csv_path: str) -> list:
+    """Read test cases from CSV file"""
+    test_cases = []
+    with open(csv_path, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            test_cases.append({
+                'sr_no': row['Sr. No'],
+                'curl_command': row['Curl Command'],
+                'users': int(row['No. Of Users']),
+                'duration': row['Duration']
+            })
+    return test_cases
 
 def extract_test_params(prompt: str) -> dict:
     """Extract test parameters from the prompt"""
@@ -46,74 +61,30 @@ def extract_curl_command(prompt: str) -> str:
         return curl_match.group(0)
     return prompt
 
-async def test_mcp_server(prompt: str = None):
-    """Demo client showing natural language test generation"""
-    logger.info("Connecting to MCP server...")
-    
-    if not prompt:
-        # Default test if no prompt provided
-        prompt = "Test https://jsonplaceholder.typicode.com API with 5 users: GET /posts endpoint"
-
-    # Create timestamp for the test directory
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    test_dir = os.path.join("tests", "generated", timestamp)
+async def generate_test(test_case: dict, generator: LocustScriptGenerator, timestamp: str) -> tuple:
+    """Generate a single test from a test case"""
+    # Create test directory
+    test_dir = os.path.join("tests", "generated", f"{timestamp}_case{test_case['sr_no']}")
     os.makedirs(test_dir, exist_ok=True)
     
     # Define test file paths
-    test_file_name = f"locust_test_{timestamp}.py"
+    test_file_name = f"locust_test_{timestamp}_case{test_case['sr_no']}.py"
     test_file_path = os.path.join(test_dir, test_file_name)
     config_file_path = os.path.join(test_dir, "config.json")
 
-    # Extract test parameters and curl command
-    test_params = extract_test_params(prompt)
-    is_curl = "curl" in prompt
+    # Generate test script
+    script = generator.generate_from_curl(
+        test_case['curl_command'],
+        users=test_case['users'],
+        run_time=test_case['duration']
+    )
     
-    # Create generator instance
-    generator = LocustScriptGenerator()
-    
-    if is_curl:
-        # Generate directly using the curl command
-        curl_command = extract_curl_command(prompt)
-        script = generator.generate_from_curl(
-            curl_command,
-            users=test_params["users"],
-            run_time=test_params["runTime"]
-        )
-        # Parse the command to get config
-        config = generator._parse_curl_command(
-            curl_command,
-            users=test_params["users"],
-            run_time=test_params["runTime"]
-        )
-    else:
-        # Use WebSocket server for natural language prompts
-        async with websockets.connect('ws://localhost:8000/mcp') as websocket:
-            test_config = {
-                "command": "generate",
-                "params": {
-                    "prompt": prompt,
-                    "users": test_params["users"],
-                    "runTime": test_params["runTime"]
-                }
-            }
-
-            await websocket.send(json.dumps(test_config))
-            response = await websocket.recv()
-            generate_result = json.loads(response)
-            
-            if "error" in generate_result and generate_result["error"]:
-                print(f"Error: {generate_result['error']}")
-                return
-
-            if "result" in generate_result:
-                script = generate_result["result"]["script"]
-                config = generate_result["result"]["config"]
-    
-    print(f"\nGenerating test from {'curl command' if is_curl else 'prompt'}: {prompt}")
-    print(f"\nGenerated Locust test script:")
-    print("=" * 80)
-    print(script)
-    print("=" * 80)
+    # Get config
+    config = generator._parse_curl_command(
+        test_case['curl_command'],
+        users=test_case['users'],
+        run_time=test_case['duration']
+    )
     
     # Save test script
     with open(test_file_path, 'w') as f:
@@ -122,17 +93,60 @@ async def test_mcp_server(prompt: str = None):
     # Save config
     with open(config_file_path, 'w') as f:
         json.dump(config, f, indent=4)
+        
+    return test_file_path, config_file_path, script, config
+
+async def batch_generate_tests(csv_path: str):
+    """Generate tests from a CSV file of test cases"""
+    logger.info(f"Reading test cases from {csv_path}")
     
-    print("\nTest files saved:")
-    print(f"Test script: {test_file_path}")
-    print(f"Config file: {config_file_path}")
-    print("\nTo run this test, use the following command:")
-    if is_curl:
-        print(f"locust -f {test_file_path}")
-    else:
-        print(f"locust -f {test_file_path} --host {config['targetUrl']} --users {test_params['users']} --spawn-rate 1 --run-time {test_params['runTime']}")
+    # Read test cases
+    test_cases = read_test_cases(csv_path)
+    if not test_cases:
+        logger.error("No test cases found in CSV file")
+        return
+    
+    # Create generator instance
+    generator = LocustScriptGenerator()
+    
+    # Generate timestamp for this batch
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Process each test case
+    for test_case in test_cases:
+        logger.info(f"Generating test for case {test_case['sr_no']}")
+        
+        try:
+            test_file_path, config_file_path, script, config = await generate_test(
+                test_case, generator, timestamp
+            )
+            
+            print(f"\nGenerated test for case {test_case['sr_no']}:")
+            print("=" * 80)
+            print(script)
+            print("=" * 80)
+            
+            print(f"\nTest files saved:")
+            print(f"Test script: {test_file_path}")
+            print(f"Config file: {config_file_path}")
+            print("\nTo run this test, use the following command:")
+            print(f"locust -f {test_file_path} --users {test_case['users']} --spawn-rate 1 --run-time {test_case['duration']} --headless")
+            
+        except Exception as e:
+            logger.error(f"Error generating test for case {test_case['sr_no']}: {str(e)}")
+            continue
+    
+    logger.info(f"Completed processing {len(test_cases)} test cases")
 
 if __name__ == "__main__":
-    # Get prompt from command line arguments if provided
-    prompt = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
-    asyncio.run(test_mcp_server(prompt))
+    # Check if CSV file path is provided
+    if len(sys.argv) != 2:
+        print("Usage: python test_client.py <path_to_csv_file>")
+        sys.exit(1)
+        
+    csv_path = sys.argv[1]
+    if not os.path.exists(csv_path):
+        print(f"Error: CSV file not found: {csv_path}")
+        sys.exit(1)
+        
+    asyncio.run(batch_generate_tests(csv_path))
